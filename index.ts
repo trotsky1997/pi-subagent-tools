@@ -160,6 +160,7 @@ async function runSubagent(
 	cwd: string,
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
+	noTools: boolean,
 ): Promise<SubResult> {
 	const model = DEFAULT_MODEL;
 	const result: SubResult = {
@@ -175,6 +176,14 @@ async function runSubagent(
 	// fork = subagent inherits the parent session's context (messages); new = empty.
 	// --fork <file> conflicts with --no-session, so we pick one per mode.
 	const args: string[] = ["--mode", "json", "-p", "--model", model];
+	// websearch_subagent passes noTools=true: it only needs web_search, which the
+	// harness injects at the provider layer (unconditionally, into params.tools)
+	// regardless of pi's active tool set — so disabling pi tools drops the whole
+	// built-in tool schema + the "Available tools" system-prompt section, saving
+	// ~1-2k tokens per call, without losing web_search. webfetch_subagent must
+	// keep tools on: web_fetch is a real pi tool registered by the harness and
+	// is only active via the auto-add path (which --no-tools suppresses).
+	if (noTools) args.push("--no-tools");
 	if (contextMode === "fork" && sessionFile) {
 		args.push("--fork", sessionFile);
 	} else {
@@ -397,8 +406,9 @@ async function executeSubagent(
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
 	failLabel: string,
+	noTools: boolean,
 ): Promise<AgentToolResult<SubagentDetails>> {
-	const result = await runSubagent(task, systemPrompt, contextMode, sessionFile, cwd, signal, onUpdate);
+	const result = await runSubagent(task, systemPrompt, contextMode, sessionFile, cwd, signal, onUpdate, noTools);
 	const isError = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
 	if (isError) {
 		const errMsg = result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
@@ -572,7 +582,7 @@ export default function (pi: ExtensionAPI) {
 			const cwd = params.cwd || ctx.cwd;
 			const contextMode = resolveContextMode(params);
 			const sessionFile = contextMode === "fork" ? ctx.sessionManager.getSessionFile() : undefined;
-			return executeSubagent(params.task, SEARCH_SYSTEM_PROMPT, contextMode, sessionFile, cwd, signal, onUpdate as OnUpdateCallback | undefined, "Web search");
+			return executeSubagent(params.task, SEARCH_SYSTEM_PROMPT, contextMode, sessionFile, cwd, signal, onUpdate as OnUpdateCallback | undefined, "Web search", true);
 		},
 
 		renderCall(args, theme) {
@@ -610,7 +620,7 @@ export default function (pi: ExtensionAPI) {
 			const sessionFile = contextMode === "fork" ? ctx.sessionManager.getSessionFile() : undefined;
 			// Compose the user turn: the URL to fetch first, then the task describing what to extract.
 			const task = `URL: ${params.url}\n\n${params.task}`;
-			return executeSubagent(task, FETCH_SYSTEM_PROMPT, contextMode, sessionFile, cwd, signal, onUpdate as OnUpdateCallback | undefined, "Web fetch");
+			return executeSubagent(task, FETCH_SYSTEM_PROMPT, contextMode, sessionFile, cwd, signal, onUpdate as OnUpdateCallback | undefined, "Web fetch", false);
 		},
 
 		renderCall(args, theme) {
