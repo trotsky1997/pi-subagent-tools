@@ -176,13 +176,12 @@ async function runSubagent(
 	// fork = subagent inherits the parent session's context (messages); new = empty.
 	// --fork <file> conflicts with --no-session, so we pick one per mode.
 	const args: string[] = ["--mode", "json", "-p", "--model", model];
-	// websearch_subagent passes noTools=true: it only needs web_search, which the
-	// harness injects at the provider layer (unconditionally, into params.tools)
-	// regardless of pi's active tool set — so disabling pi tools drops the whole
-	// built-in tool schema + the "Available tools" system-prompt section, saving
-	// ~1-2k tokens per call, without losing web_search. webfetch_subagent must
-	// keep tools on: web_fetch is a real pi tool registered by the harness and
-	// is only active via the auto-add path (which --no-tools suppresses).
+	// Both subagents keep tools on (noTools=false): the harness injects server-side
+	// web_search at the provider layer regardless of pi's active tool set, but the
+	// subagents may also need other tools (bash/curl, read on a cached file, etc.)
+	// as fallbacks when web_search/web_fetch is unavailable or insufficient.
+	// Passing --no-tools would drop the whole built-in tool schema + the
+	// "Available tools" system-prompt section, which removes those fallbacks.
 	if (noTools) args.push("--no-tools");
 	if (contextMode === "fork" && sessionFile) {
 		args.push("--fork", sessionFile);
@@ -429,7 +428,7 @@ async function executeSubagent(
 // system prompts
 // ---------------------------------------------------------------------------
 
-const SEARCH_SYSTEM_PROMPT = `You are a web research subagent. You have a native server-side web_search tool.
+const SEARCH_SYSTEM_PROMPT = `You are a web research subagent. You may use ANY available tool — not just web_search. You have a native server-side web_search tool; use it as the primary path, but fall back to other tools (bash/curl, read on a cached file, etc.) if web_search is unavailable or insufficient.
 
 Your job: research the task in the user prompt using web_search, then return a single,
 self-contained answer. The task may already contain leads (names, terms, URLs, suspected facts)
@@ -571,9 +570,11 @@ export default function (pi: ExtensionAPI) {
 		description: [
 			"Fork a dedicated web-search session (isolated context) that uses the macaron-anthropic provider's",
 			"native server-side web_search, then returns 搜索结果 / 结论 / 关键发现 / 出处 (sources).",
-			"Inputs: task (the full prompt, leads folded in). context=fork inherits the parent session's",
-			"messages; context=new (default) starts fresh. Use when the main session needs fresh web facts",
-			"with cited sources, optionally building on what's already been discussed.",
+			"The subagent may use ANY available tool — it prefers web_search but falls back to",
+			"curl/read/etc. if web_search is unavailable or insufficient. Inputs: task (the full prompt,",
+			"leads folded in). context=fork inherits the parent session's messages; context=new (default)",
+			"starts fresh. Use when the main session needs fresh web facts with cited sources, optionally",
+			"building on what's already been discussed.",
 		].join(" "),
 
 		parameters: SearchParams,
@@ -582,7 +583,7 @@ export default function (pi: ExtensionAPI) {
 			const cwd = params.cwd || ctx.cwd;
 			const contextMode = resolveContextMode(params);
 			const sessionFile = contextMode === "fork" ? ctx.sessionManager.getSessionFile() : undefined;
-			return executeSubagent(params.task, SEARCH_SYSTEM_PROMPT, contextMode, sessionFile, cwd, signal, onUpdate as OnUpdateCallback | undefined, "Web search", true);
+			return executeSubagent(params.task, SEARCH_SYSTEM_PROMPT, contextMode, sessionFile, cwd, signal, onUpdate as OnUpdateCallback | undefined, "Web search", false);
 		},
 
 		renderCall(args, theme) {
